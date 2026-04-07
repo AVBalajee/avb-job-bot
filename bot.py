@@ -24,13 +24,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DB_PATH", "jobbot.db")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DEFAULT_LOCATION = os.getenv("DEFAULT_LOCATION", "India")
 
 BATCHES = ["2026", "2025", "2024", "2023", "2022", "2021"]
+
 TIMEFRAMES = {
     "24h": "Past 24 hours",
     "7d": "Past 7 days",
+}
+
+EXPERIENCE_OPTIONS = {
+    "0-2": "0-2 years",
+    "2-4": "2-4 years",
+    "4-6": "4-6 years",
 }
 
 ROLES = {
@@ -52,12 +58,14 @@ class UserPrefs:
     batch: str = "2023"
     role_key: str = "software_engineer"
     timeframe: str = "24h"
+    experience: str = "0-2"
     location: str = DEFAULT_LOCATION
 
 
 def init_db() -> None:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS user_prefs (
@@ -65,10 +73,20 @@ def init_db() -> None:
             batch TEXT NOT NULL,
             role_key TEXT NOT NULL,
             timeframe TEXT NOT NULL,
+            experience TEXT NOT NULL DEFAULT '0-2',
             location TEXT NOT NULL
         )
         """
     )
+
+    # Backward compatibility for older DBs
+    cur.execute("PRAGMA table_info(user_prefs)")
+    cols = [row[1] for row in cur.fetchall()]
+    if "experience" not in cols:
+        cur.execute(
+            "ALTER TABLE user_prefs ADD COLUMN experience TEXT NOT NULL DEFAULT '0-2'"
+        )
+
     conn.commit()
     conn.close()
 
@@ -77,7 +95,7 @@ def get_prefs(user_id: int) -> UserPrefs:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        "SELECT batch, role_key, timeframe, location FROM user_prefs WHERE user_id = ?",
+        "SELECT batch, role_key, timeframe, experience, location FROM user_prefs WHERE user_id = ?",
         (user_id,),
     )
     row = cur.fetchone()
@@ -93,15 +111,23 @@ def save_prefs(user_id: int, prefs: UserPrefs) -> None:
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO user_prefs(user_id, batch, role_key, timeframe, location)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO user_prefs(user_id, batch, role_key, timeframe, experience, location)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             batch = excluded.batch,
             role_key = excluded.role_key,
             timeframe = excluded.timeframe,
+            experience = excluded.experience,
             location = excluded.location
         """,
-        (user_id, prefs.batch, prefs.role_key, prefs.timeframe, prefs.location),
+        (
+            user_id,
+            prefs.batch,
+            prefs.role_key,
+            prefs.timeframe,
+            prefs.experience,
+            prefs.location,
+        ),
     )
     conn.commit()
     conn.close()
@@ -132,7 +158,8 @@ def instahyre_url(query: str, location: str, timeframe: str) -> str:
 
 def build_links(prefs: UserPrefs) -> Dict[str, str]:
     role_label = ROLES[prefs.role_key]
-    query = f"{role_label} {prefs.batch} batch fresher entry level 0-2 years"
+    experience_label = EXPERIENCE_OPTIONS[prefs.experience]
+    query = f"{role_label} {prefs.batch} batch entry level {experience_label}"
 
     return {
         "LinkedIn": linkedin_url(query, prefs.location, prefs.timeframe),
@@ -145,6 +172,12 @@ def main_menu(prefs: UserPrefs) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(f"Batch: {prefs.batch}", callback_data="menu_batch")],
         [InlineKeyboardButton(f"Role: {ROLES[prefs.role_key]}", callback_data="menu_role")],
+        [
+            InlineKeyboardButton(
+                f"Experience: {EXPERIENCE_OPTIONS[prefs.experience]}",
+                callback_data="menu_exp",
+            )
+        ],
         [InlineKeyboardButton(f"Time: {TIMEFRAMES[prefs.timeframe]}", callback_data="menu_time")],
         [InlineKeyboardButton(f"Search links ({prefs.location})", callback_data="search_now")],
         [InlineKeyboardButton("Help", callback_data="help")],
@@ -166,6 +199,16 @@ def role_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def experience_menu() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton("0-2 years", callback_data="exp:0-2")],
+        [InlineKeyboardButton("2-4 years", callback_data="exp:2-4")],
+        [InlineKeyboardButton("4-6 years", callback_data="exp:4-6")],
+        [InlineKeyboardButton("⬅ Back", callback_data="home")],
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
 def timeframe_menu() -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("Past 24 hours", callback_data="time:24h")],
@@ -181,11 +224,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     text = (
         "🚀 *Job Link Bot*\n\n"
-        "Choose your *batch*, *role*, and *time window*.\n"
+        "Choose your *batch*, *role*, *experience*, and *time window*.\n"
         "Then tap *Search links* and I’ll send buttons for LinkedIn, Naukri, and Instahyre.\n\n"
         f"*Current settings*\n"
         f"• Batch: *{prefs.batch}*\n"
         f"• Role: *{ROLES[prefs.role_key]}*\n"
+        f"• Experience: *{EXPERIENCE_OPTIONS[prefs.experience]}*\n"
         f"• Time: *{TIMEFRAMES[prefs.timeframe]}*\n"
         f"• Location: *{prefs.location}*"
     )
@@ -244,9 +288,10 @@ def job_link_buttons(links: Dict[str, str]) -> InlineKeyboardMarkup:
             InlineKeyboardButton("Change Role", callback_data="menu_role"),
         ],
         [
+            InlineKeyboardButton("Experience", callback_data="menu_exp"),
             InlineKeyboardButton("Change Time", callback_data="menu_time"),
-            InlineKeyboardButton("Home", callback_data="home"),
         ],
+        [InlineKeyboardButton("Home", callback_data="home")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -255,11 +300,13 @@ async def send_links(update: Update, context: ContextTypes.DEFAULT_TYPE, prefs: 
     links = build_links(prefs)
     role_label = ROLES[prefs.role_key]
     time_label = TIMEFRAMES[prefs.timeframe]
+    exp_label = EXPERIENCE_OPTIONS[prefs.experience]
 
     text = (
         f"🔎 *Job search ready*\n\n"
         f"*Batch:* {prefs.batch}\n"
         f"*Role:* {role_label}\n"
+        f"*Experience:* {exp_label}\n"
         f"*Time window:* {time_label}\n"
         f"*Location:* {prefs.location}\n\n"
         "Tap the buttons below to open the search pages.\n\n"
@@ -305,6 +352,10 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.edit_message_text("Select role:", reply_markup=role_menu())
         return
 
+    if data == "menu_exp":
+        await query.edit_message_text("Select experience range:", reply_markup=experience_menu())
+        return
+
     if data == "menu_time":
         await query.edit_message_text("Select time window:", reply_markup=timeframe_menu())
         return
@@ -332,6 +383,12 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.edit_message_text("✅ Role saved.", reply_markup=main_menu(prefs))
         return
 
+    if data.startswith("exp:"):
+        prefs.experience = data.split(":", 1)[1]
+        save_prefs(user.id, prefs)
+        await query.edit_message_text("✅ Experience saved.", reply_markup=main_menu(prefs))
+        return
+
     if data.startswith("time:"):
         prefs.timeframe = data.split(":", 1)[1]
         save_prefs(user.id, prefs)
@@ -340,12 +397,14 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def run() -> None:
-    if not BOT_TOKEN:
+    bot_token = os.getenv("BOT_TOKEN", "")
+
+    if not bot_token:
         raise RuntimeError("BOT_TOKEN missing. Set it in Railway Variables or local .env")
 
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(bot_token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("location", set_location))
