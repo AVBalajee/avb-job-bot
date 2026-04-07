@@ -341,7 +341,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def run() -> None:
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN missing in .env file")
+        raise RuntimeError("BOT_TOKEN missing. Set it in Railway Variables or local .env")
 
     init_db()
 
